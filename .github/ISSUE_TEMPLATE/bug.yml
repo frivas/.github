@@ -1,0 +1,39 @@
+name: Bug report
+description: Report reproducible behavior that should be fixed
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting this. Please remove sensitive data before submitting.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Give the smallest reliable sequence of steps, commands, or sample input.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v1.2.3 or a commit SHA
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant OS, runtime, browser, or deployment details.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or screenshots
+      description: Add only the evidence needed to diagnose the issue. Remove secrets and personal data.
+
