@@ -1,0 +1,149 @@
+name: Security
+
+# Shared security checks for frivas/* repositories. Call it from a repo with:
+#
+#   jobs:
+#     security:
+#       uses: frivas/.github/.github/workflows/security.yml@v1
+#       with:
+#         codeql-languages: '["go", "actions"]'
+#
+# Jobs:
+#   gitleaks  full-history secret scan; honours .gitleaks.toml and gitleaks-baseline.json
+#   trivy     CycloneDX SBOM uploaded as the `sbom` artifact, then fails on HIGH/CRITICAL
+#             fixable vulnerabilities and misconfigurations
+#   codeql    CodeQL CLI, default code-scanning suite per language; fails on error-level results
+#
+# Every tool is a pinned release binary verified against its published checksum,
+# so no third-party action runs with the caller's token.
+
+on:
+  workflow_call:
+    inputs:
+      codeql-languages:
+        description: JSON array of CodeQL languages, e.g. '["go", "actions"]' or '["javascript-typescript", "actions"]'
+        type: string
+        default: '["actions"]'
+      go-version-file:
+        description: go.mod to read the Go version from (Go repos only)
+        type: string
+        default: go.mod
+      gitleaks:
+        description: Run the gitleaks job (set false when the repo already runs its own)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  TRIVY_VERSION: 0.76.1
+  CODEQL_VERSION: 2.27.3
+
+jobs:
+  gitleaks:
+    if: inputs.gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          file="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$file"
+          curl -fsSL "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt" | grep " $file\$" | sha256sum -c -
+          tar -xzf "$file" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Scan every commit
+        run: |
+          set -euo pipefail
+          args=(git --no-banner --redact --log-opts=--all)
+          [ -f .gitleaks.toml ] && args+=(--config .gitleaks.toml)
+          [ -f gitleaks-baseline.json ] && args+=(--baseline-path gitleaks-baseline.json)
+          gitleaks "${args[@]}" .
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          file="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$file"
+          curl -fsSL "$base/trivy_${TRIVY_VERSION}_checksums.txt" | grep " $file\$" | sha256sum -c -
+          tar -xzf "$file" trivy
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Generate CycloneDX SBOM
+        run: trivy fs --format cyclonedx --output sbom.cdx.json --no-progress .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          if-no-files-found: error
+      - name: Vulnerabilities and misconfigurations
+        run: >-
+          trivy fs --scanners vuln,misconfig
+          --severity HIGH,CRITICAL --ignore-unfixed
+          --exit-code 1 --no-progress .
+
+  codeql:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.codeql-languages) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: Install CodeQL CLI
+        run: |
+          set -euo pipefail
+          base="https://github.com/github/codeql-action/releases/download/codeql-bundle-v${CODEQL_VERSION}"
+          file=codeql-bundle-linux64.tar.zst
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$file"
+          curl -fsSL "$base/$file.checksum.txt" | sha256sum -c -
+          tar --zstd -xf "$file"
+          rm "$file"
+          echo "$RUNNER_TEMP/codeql" >> "$GITHUB_PATH"
+      - name: Create database
+        env:
+          LANG_: ${{ matrix.language }}
+        run: |
+          set -euo pipefail
+          mode=none
+          [ "$LANG_" = go ] && mode=autobuild
+          codeql database create "$RUNNER_TEMP/db" --language="$LANG_" --build-mode="$mode" --source-root=.
+      - name: Analyze
+        env:
+          LANG_: ${{ matrix.language }}
+        run: |
+          set -euo pipefail
+          codeql database analyze "$RUNNER_TEMP/db" --format=sarif-latest --output=codeql.sarif --sarif-category="$LANG_"
+          jq -r '.runs[].results[] | "\(.level // "warning")  \(.ruleId)  \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)  \(.message.text | split("\n")[0])"' codeql.sarif | tee findings.txt
+          errors=$(jq '[.runs[].results[] | select(.level == "error")] | length' codeql.sarif)
+          echo "CodeQL ($LANG_): $(wc -l < findings.txt) findings, $errors at error level"
+          [ "$errors" -eq 0 ]
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codeql-${{ matrix.language }}
+          path: codeql.sarif
+          if-no-files-found: ignore
