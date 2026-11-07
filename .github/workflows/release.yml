@@ -1,0 +1,118 @@
+name: Release
+
+# Shared release for frivas/* repositories, modelled on the cashflow-forecast cut:
+# the security report gates the release, the notes follow the same sections
+# (What this is / Gate / Security / Merged pull requests), and every report file
+# ships as a release asset next to the repo's own build output.
+#
+#   jobs:
+#     release:
+#       needs: [build]                      # whatever must pass first
+#       permissions:
+#         contents: write
+#       uses: frivas/.github/.github/workflows/release.yml@v1
+#       with:
+#         tag: ${{ github.ref_name }}
+#         codeql-languages: '["go", "actions"]'
+#         dist-artifact: binaries           # optional: an artifact uploaded earlier in the run
+#         gate: CI (tests, race detector, lint) passed on this commit.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing tag to release
+        type: string
+        required: true
+      title:
+        type: string
+        default: ''
+      prerelease:
+        type: boolean
+        default: false
+      codeql-languages:
+        type: string
+        default: '["actions"]'
+      go-version-file:
+        type: string
+        default: go.mod
+      dist-artifact:
+        description: Name of an artifact from this run whose files are attached too
+        type: string
+        default: ''
+      changes-file:
+        description: File inside dist-artifact to include as a Changes section (e.g. CHANGELOG.md)
+        type: string
+        default: ''
+      gate:
+        description: One line on what else passed before this release (shown under Gate)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: frivas/.github/.github/workflows/security.yml@v1
+    with:
+      ref: ${{ inputs.tag }}
+      codeql-languages: ${{ inputs.codeql-languages }}
+      go-version-file: ${{ inputs.go-version-file }}
+
+  publish:
+    needs: security
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: security-report
+          path: ${{ runner.temp }}/assets/report
+      - if: inputs.dist-artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: ${{ runner.temp }}/assets/dist
+      - name: Write notes and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          TITLE: ${{ inputs.title || inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          LANGS: ${{ inputs.codeql-languages }}
+          CHANGES: ${{ inputs.changes-file }}
+          GATE: ${{ inputs.gate }}
+        run: |
+          set -euo pipefail
+          a="$RUNNER_TEMP/assets"
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          args=(-f tag_name="$TAG"); [ -n "$prev" ] && args+=(-f previous_tag_name="$prev")
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body | { grep -v '^## ' || true; })
+          {
+            echo "## What this is"; echo
+            echo "${GITHUB_REPOSITORY#*/} $TAG, built from \`$(git rev-parse --short=8 HEAD)\`${prev:+, the first release after $prev}."
+            if [ -n "$CHANGES" ] && [ -f "$a/dist/$CHANGES" ]; then echo; echo "## Changes"; echo; cat "$a/dist/$CHANGES"; fi
+            echo; echo "## Gate"; echo
+            [ -n "$GATE" ] && echo "- $GATE"
+            echo "- The security report passed: Trivy, gitleaks and trufflehog over all $(git rev-list --count HEAD) commits, and CodeQL for $(jq -r 'join(", ")' <<<"$LANGS")."
+            echo; echo "## Security"; echo
+            cat "$a/report/counts.md"
+            echo; echo "## Merged pull requests"; echo
+            echo "$prs"
+          } > "$RUNNER_TEMP/notes.md"
+          mapfile -t files < <(find "$a" -type f ! -size 0 | sort)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "$TITLE" \
+              --prerelease="$PRERELEASE" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
