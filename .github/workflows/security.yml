@@ -1,0 +1,72 @@
+name: Security
+
+# Shared security gate for frivas/* repositories. Runs scripts/security-report.sh:
+# Trivy SBOM + vulnerabilities, secrets and misconfigs; gitleaks and trufflehog over
+# the full history; the CodeQL CLI per language. The report's tables go to the job
+# summary and every file is uploaded as the `security-report` artifact.
+#
+#   jobs:
+#     security:
+#       uses: frivas/.github/.github/workflows/security.yml@v1
+#       with:
+#         codeql-languages: '["go", "actions"]'
+
+on:
+  workflow_call:
+    inputs:
+      codeql-languages:
+        description: JSON array of CodeQL languages, e.g. '["go", "actions"]' or '["javascript-typescript", "actions"]'
+        type: string
+        default: '["actions"]'
+      go-version-file:
+        description: go.mod to read the Go version from (Go repos only)
+        type: string
+        default: go.mod
+      ref:
+        description: Commit or tag to scan (default the triggering commit)
+        type: string
+        default: ''
+      shared-ref:
+        description: frivas/.github ref to take the scripts from; keep it equal to the @ref you call
+        type: string
+        default: v1
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: frivas/.github
+          ref: ${{ inputs.shared-ref }}
+          path: .shared-ci
+          persist-credentials: false
+      - if: contains(inputs.codeql-languages, '"go"')
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: Install pinned scanners
+        run: |
+          mv .shared-ci "$RUNNER_TEMP/shared-ci"   # keep it out of the tree that gets scanned
+          "$RUNNER_TEMP/shared-ci/scripts/install-tools.sh"
+      - name: Security report
+        env:
+          CODEQL_LANGUAGES: ${{ inputs.codeql-languages }}
+        run: '"$RUNNER_TEMP/shared-ci/scripts/security-report.sh" "$RUNNER_TEMP/security-report"'
+      - if: always()
+        run: cat "$RUNNER_TEMP/security-report/counts.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-report
+          path: ${{ runner.temp }}/security-report
+          if-no-files-found: ignore
