@@ -1,0 +1,24 @@
+# Copy to .github/workflows/release.yml. Releasing is then:
+#   git tag v1.2.3 && git push origin v1.2.3
+# The tag's commit is scanned; the release gets the security tables, an SBOM
+# section and the merged PRs in its notes, with every report file attached.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: frivas/.github/.github/workflows/release.yml@v2
+    with:
+      tag: ${{ github.ref_name }}
+      codeql-languages: '["javascript-typescript", "actions"]'

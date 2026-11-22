@@ -7,7 +7,7 @@ name: Security
 #
 #   jobs:
 #     security:
-#       uses: frivas/.github/.github/workflows/security.yml@v1
+#       uses: frivas/.github/.github/workflows/security.yml@v2
 #       with:
 #         codeql-languages: '["go", "actions"]'
 
@@ -29,7 +29,7 @@ on:
       shared-ref:
         description: frivas/.github ref to take the scripts from; keep it equal to the @ref you call
         type: string
-        default: v1
+        default: v2
 
 permissions:
   contents: read
@@ -37,6 +37,7 @@ permissions:
 jobs:
   report:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +59,14 @@ jobs:
         run: |
           mv .shared-ci "$RUNNER_TEMP/shared-ci"   # keep it out of the tree that gets scanned
           "$RUNNER_TEMP/shared-ci/scripts/install-tools.sh"
+      # One Trivy vulnerability DB download per repo per day instead of one per run.
+      - id: day
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ steps.day.outputs.d }}
+          restore-keys: trivy-db-
       - name: Security report
         env:
           CODEQL_LANGUAGES: ${{ inputs.codeql-languages }}

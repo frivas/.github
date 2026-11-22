@@ -1,0 +1,19 @@
+# Copy to .github/dependabot.yml and keep only the ecosystems the repo uses
+# (npm, gomod, pip, swift, docker...). github-actions always stays.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
